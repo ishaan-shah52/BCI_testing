@@ -4,7 +4,7 @@ import threading
 from pynput import keyboard
 from brainflow.board_shim import BoardShim, BrainFlowInputParams, BoardIds
 
-# Define the labels and their corresponding keys
+#labels and associated numbers on keyboard
 labels = {
     '1': 'left_blink',
     '2': 'right_blink',
@@ -13,16 +13,15 @@ labels = {
     '5': 'nothing'
 }
 
-# Initialize variables
-current_label = 'nothing' #default
+current_label = 'nothing'
 start_time = time.time()
-label_data = []  # To store time and labels
-eeg_data = []  # To store EEG samples
+label_data = []  #for storing time and actions
+eeg_data = []  #to store voltages from EEG
 running = True
 
-# BrainFlow setup
+#BrainFlow setup based on documentation: https://brainflow.readthedocs.io/en/stable/SupportedBoards.html#ganglion
 params = BrainFlowInputParams()
-params.mac_address = "D5:A4:BE:DD:BC:89"  
+params.mac_address = "D5:A4:BE:DD:BC:89"  #this was recieved from using python libraries in the previous step file (s0) so device is instantly found
 params.serial_port = "COM5"  
 board = BoardShim(BoardIds.GANGLION_BOARD.value, params)
 
@@ -41,16 +40,16 @@ def on_release(key):
         # Stop listener
         return False
 
-# Timer function to record time and labels
+#Timer to also record labels
 def record_labels():
     global running 
     while running:
         elapsed_time = time.time() - start_time
         label_data.append((elapsed_time, current_label))
-        print(f"Time: {elapsed_time:.1f} s, Label: {current_label}")
+        print(f"Time: {elapsed_time:.1f} s, Label: {current_label}") #.1f is a floating point to one decimal place
         time.sleep(0.1) #record every 0.1 seconds
 
-# Function to record EEG data
+#record EEG data
 def record_eeg():
     global running
     while running:
@@ -67,11 +66,11 @@ def merge_data():
     for eeg_sample in eeg_data:
         eeg_time = eeg_sample[0]
         # Find the nearest label based on time
-        closest_label = min(label_data, key=lambda x: abs(x[0] - eeg_time))
+        closest_label = min(label_data, key=lambda x: abs(x[0] - eeg_time)) #not all times are lined up cuz of time.time
         merged_data.append((*eeg_sample, closest_label[1]))
     return merged_data
 
-# Save data to a CSV file
+#CSV file
 def save_to_csv(filename, merged_data):
     with open(filename, mode='w', newline='') as file:
         writer = csv.writer(file)
@@ -88,7 +87,7 @@ def main():
         print("Starting EEG data stream...")
         board.start_stream()
 
-        # Start label and EEG recording threads
+        #use threading for least delay between collection of data
         label_thread = threading.Thread(target=record_labels)
         eeg_thread = threading.Thread(target=record_eeg)
         label_thread.start()
