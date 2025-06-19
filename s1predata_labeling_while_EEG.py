@@ -118,8 +118,8 @@ def main():
         # Merge data and save to CSV
         print("Merging EEG data with labels...")
         merged_data = merge_data()
-        save_to_csv('eeg_sessions/eeg_action_data_13.csv', merged_data) #change both of these lines
-        print("Data saved to 'eeg_action_data_13.csv'") #this one
+        save_to_csv('eeg_sessions/eeg_action_data_1.csv', merged_data) #change both of these lines
+        print("Data saved to 'eeg_action_data_1.csv'") #this one
 
         print("Releasing session...")
         board.release_session()
