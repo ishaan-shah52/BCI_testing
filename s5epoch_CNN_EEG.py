@@ -16,7 +16,7 @@ from sklearn.model_selection import train_test_split
 df = pd.read_csv('filtered_eeg_action_data.csv')
 
 # Rebase time so that the first time stamp is zero.
-df['Time_Relative'] = df['Time (s)'] - df['Time (s)'].min()
+df['Time_Relative'] = df['Time'] - df['Time'].min()
 
 # Define the desired epoch length (in seconds)
 epoch_length = 3.0
