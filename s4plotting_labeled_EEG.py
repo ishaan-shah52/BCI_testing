@@ -1,31 +1,36 @@
 import matplotlib.pyplot as plt
 import pandas as pd
 
-# Load EEG data from the CSV file
+#post filtering
 filename = 'filtered_eeg_action_data.csv'
-data = pd.read_csv(filename)
+filtered_eeg = pd.read_csv(filename)
 
-# Debug: Print the first few rows of the dataset
+#quick check
 print("Dataset preview:")
-print(data.head())
+print(filtered_eeg.head())
 
-# Assuming the CSV columns are as follows:
-# 0: Time (s)
-# 1: Channel 2
-# 2: Channel 4
-# 3: Label
-# 4: Filtered Channel 2
-# 5: Filtered Channel 4
+# Get time, labels, and the filtered EEG channels columns
+time = filtered_eeg['Time']
+labels = filtered_eeg['Label']
 
-# Extract time, labels, and the filtered EEG channels
-time = data.iloc[:, 0]           # Time (s)
-labels = data.iloc[:, 3]         # Label
-channels = data.iloc[:, [4, 5]]    # Filtered Channel 2 and Filtered Channel 4
+filtered_cols = [
+    'Filtered Channel 1',
+    'Filtered Channel 2',
+    'Filtered Channel 3',
+    'Filtered Channel 4'
+]
 
-# Rename channels for clarity (optional)
-channels.columns = ['Filtered Channel 2', 'Filtered Channel 4']
+channels = filtered_eeg[filtered_cols]
 
-# Define a mapping from label to a color
+#corresponds to colored wires I am using
+channel_colors = {
+    'Filtered Channel 1': 'green',
+    'Filtered Channel 2': 'yellow',
+    'Filtered Channel 3': 'orange',
+    'Filtered Channel 4': 'red'
+}
+
+#mapping from label to a color
 label_colors = {
     'nothing': 'gray',
     'left_blink': 'blue',
@@ -34,32 +39,41 @@ label_colors = {
     'eyebrow_raise': 'green'
 }
 
-# Create a copy of the data for segmenting labels
-df = data.copy()
-df['Time'] = time
-df['Label'] = labels
+#Create a copy of the data for segmenting labels
+# essentially this is a helper dataframe
+helper_df = filtered_eeg.copy()
 
 # Identify segments where the label is constant.
 # A new segment starts when the label changes compared to the previous row.
-df['Label_Change'] = df['Label'] != df['Label'].shift(1)
-df['Segment'] = df['Label_Change'].cumsum()
+
+#shift(1) shifts the whole row down by one with a NaN in the first row
+helper_df['Label_Change'] = helper_df['Label'] != helper_df['Label'].shift(1) #true or false column
+helper_df['Segment'] = helper_df['Label_Change'].cumsum() #keep a running count of True
 
 # Create subplots: one for the EEG data and one for the label timeline.
-fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True, figsize=(12, 8),
-                               gridspec_kw={'height_ratios': [4, 1]})
+fig, (ax1, ax2) = plt.subplots(
+    2, 1,                     # 2 rows, 1 column
+    sharex=True,              # both rows share the same x-axis
+    figsize=(12, 8),          # width x height in inches
+    gridspec_kw={'height_ratios': [4, 1]}  # top panel 4× taller than bottom
+)
 
 # Plot the EEG channels on the first subplot.
-ax1.plot(time, channels['Filtered Channel 2'], label='Filtered Channel 2')
-ax1.plot(time, channels['Filtered Channel 4'], label='Filtered Channel 4')
-ax1.set_ylim(-20000, 20000)
-ax1.set_title('EEG Channel Data')
+for col in filtered_cols: #4 channels
+    ax1.plot(time,
+             channels[col],
+             label=col,
+             color=channel_colors.get(col, 'black'))
+
 ax1.set_ylabel('Amplitude (µV)')
-ax1.legend()
+ax1.set_title('Filtered EEG: Channels 1-4')
+ax1.set_ylim(-5000, 5000)  
+ax1.legend(loc='upper right')
 ax1.grid(True)
 
 # Plot the label timeline on the second subplot.
 # For each continuous segment with the same label, fill that time range with a color.
-segments = df.groupby('Segment')
+segments = helper_df.groupby('Segment')
 for seg, group in segments:
     seg_label = group['Label'].iloc[0]
     start_time = group['Time'].iloc[0]

@@ -20,12 +20,12 @@ print("\nCorrected Data Preview:")
 print(data.head())
 
 # Extract relevant columns: Time, Channel 2, Channel 4, and Label
-relevant_data = data[['Time', 'EEG_Ch2', 'EEG_Ch4', 'Label']]
+relevant_data = data[['Time', 'EEG_Ch1', 'EEG_Ch2', 'EEG_Ch3', 'EEG_Ch4', 'Label']]
 
 # Rename columns for clarity
-relevant_data.columns = ['Time (s)', 'Channel 2', 'Channel 4', 'Label']
+relevant_data.columns = ['Time', 'Channel 1', 'Channel 2', 'Channel 3', 'Channel 4', 'Label']
 
-print("here")
+print("got relevant columns")
 
 # Define the bandpass filter
 """
@@ -64,7 +64,9 @@ highcut = 50  # High cutoff frequency (Hz)
 # Notch filter settings
 # notch_freq = 60  # Notch filter frequency (Hz)
 
+relevant_data['Filtered Channel 1'] = bandpass_filter(relevant_data['Channel 1'], lowcut, highcut, fs)
 relevant_data['Filtered Channel 2'] = bandpass_filter(relevant_data['Channel 2'], lowcut, highcut, fs)
+relevant_data['Filtered Channel 3'] = bandpass_filter(relevant_data['Channel 3'], lowcut, highcut, fs)
 relevant_data['Filtered Channel 4'] = bandpass_filter(relevant_data['Channel 4'], lowcut, highcut, fs)
 
 # Save the filtered data to a new CSV file
