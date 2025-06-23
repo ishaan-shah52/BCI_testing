@@ -51,7 +51,7 @@ try:
         epoch_data = preprocess(epoch_data)
         # Suppose min_samples was determined during training
 
-        min_samples = 12  # use the same value from your training code
+        min_samples = 14  # use the same value from your training code
 
         if epoch_data.shape[0] > min_samples:
             epoch_data = epoch_data[:min_samples, :]

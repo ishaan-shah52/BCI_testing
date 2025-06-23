@@ -8,6 +8,8 @@ butter: butterworth band-pass filter: throw everything out around wanted frequen
 -gets noisy signals out, 0.5 - 50 contains the proper brain waves, boost these like an equalizer
 
 include nyquist frequency to not mislabel fast waves as slow waves due to aliasing
+-sample at least 2 times the fastest wanted which is 50, so 100 is slowest to sample at
+due to two vertices of full wave rule
 aliasing: sampling illusion
 """
 
