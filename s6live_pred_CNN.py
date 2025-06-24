@@ -2,45 +2,63 @@ import time
 import numpy as np
 import tensorflow as tf
 from brainflow.board_shim import BoardShim, BrainFlowInputParams, BoardIds
+from brainflow.data_filter import DataFilter, FilterTypes
 
-# Load your pre-trained CNN model
+#model
 model = tf.keras.models.load_model('EEG_CNN_model.h5')
 
-# Define your label mapping if needed (same as used in training)
+#label mapping
 label_map = {0: 'nothing', 1: 'left_blink', 2: 'right_blink', 3: 'both_blink', 4: 'eyebrow_raise'}
 
-# Set up BrainFlow parameters (adjust these as needed for your board)
+# Set up BrainFlow parameters
 params = BrainFlowInputParams()
-params.serial_port = "COM5"          # or adjust for your system
-params.mac_address = "D5:A4:BE:DD:BC:89"  # if using a Ganglion board with BLE, for example
+params.serial_port = "COM5"      
+params.mac_address = "D5:A4:BE:DD:BC:89" 
 board = BoardShim(BoardIds.GANGLION_BOARD.value, params)
 board.prepare_session()
 board.start_stream()
 
-# Define epoch parameters
-epoch_length = 3.0  # seconds
+#epoch parameters
+epoch_length = 2.0  # seconds
 fs = board.get_sampling_rate(BoardIds.GANGLION_BOARD.value)
 samples_per_epoch = int(epoch_length * fs)
+min_samples = 19
 
-# Define your preprocessing function (this should mimic your training preprocessing)
-def preprocess(epoch_data):
-    """
-    epoch_data: numpy array of shape (samples_per_epoch, num_channels)
-    Apply any filtering, scaling, normalization etc. here.
-    For now, assume data is already filtered.
-    """
-    # Example: normalize each channel to zero mean and unit variance
-    epoch_data = (epoch_data - np.mean(epoch_data, axis=0)) / np.std(epoch_data, axis=0)
-    return epoch_data
+#get eeg channels
+eeg_channels = board.get_eeg_channels(BoardIds.GANGLION_BOARD.value)
+print("Recording EEG from rows:", eeg_channels) 
+
+def preprocess(epoch):
+    #band-pass filter 0.5–50Hz
+    for ch in range(epoch.shape[1]):
+        DataFilter.perform_bandpass(
+            epoch[:, ch], fs,
+            25,    # center freq
+            49.5,  # half-bandwidth = 50–0.5
+            4, FilterTypes.BUTTERWORTH.value, 0
+        )
+    #Normalize each channel to zero mean, unit variance
+    return (epoch - np.mean(epoch, axis=0)) / np.std(epoch, axis=0)
+
 
 print("Starting live classification. Press Ctrl+C to stop.")
 
 try:
     while True:
-        # Get the latest data for one epoch from the board
-        # This returns an array with shape (num_channels, num_samples)
-        data = board.get_current_board_data(samples_per_epoch)
+        # array with shape (num_channels, num_samples)
+        raw = board.get_current_board_data(samples_per_epoch)
         
+        #get enough data for preprocessing
+        if raw.shape[1] < samples_per_epoch:
+            continue  # not enough data yet
+
+        #Slice out only the EEG rows = (samples, 4)
+        epoch = raw[eeg_channels, :].T
+
+        
+        # Preprocess: filter + z-score
+        epoch = preprocess(epoch)
+
         # Select the channels you want to use (for example, filtered EEG channels)
         # Adjust channel indices as needed. Here, we're assuming channels 4 and 5 are your filtered channels.
         # (Indices may differ depending on how your CSV was structured.)
@@ -49,29 +67,22 @@ try:
         
         # Preprocess the data to match the model's expected input
         epoch_data = preprocess(epoch_data)
-        # Suppose min_samples was determined during training
 
-        min_samples = 19  # use the same value from your training code
+        #trim to match training data
+        if epoch.shape[0] > min_samples:
+            epoch = epoch[:min_samples, :]
+        elif epoch.shape[0] < min_samples:
+            pad = min_samples - epoch.shape[0]
+            epoch = np.pad(epoch, ((0, pad), (0, 0)), mode='constant')
 
-        if epoch_data.shape[0] > min_samples:
-            epoch_data = epoch_data[:min_samples, :]
-        elif epoch_data.shape[0] < min_samples:
-            # Optionally, pad the epoch_data to reach min_samples
-            pad_width = min_samples - epoch_data.shape[0]
-            epoch_data = np.pad(epoch_data, ((0, pad_width), (0, 0)), mode='constant')
+        #Reshape to (1, time, channels, 1) for Conv2D
+        epoch = epoch.reshape(1, min_samples, len(eeg_channels), 1)
 
-        # Expand dims to add the batch dimension: (1, samples_per_epoch, num_channels)
-        epoch_data = np.expand_dims(epoch_data, axis=0)
-        
-        # Run the model prediction on this epoch
-        prediction = model.predict(epoch_data)
-        predicted_class = np.argmax(prediction)
-        predicted_label = label_map[predicted_class]
-        
-        # Print or use the prediction
-        print("Predicted label:", predicted_label)
-        
-        # Wait for the next epoch (or use a sliding window approach for more frequent updates)
+        probs = model.predict(epoch, verbose=0)
+        label = label_map[int(np.argmax(probs))]
+        print("Predicted label:", label)
+
+        #Wait for the next epoch
         time.sleep(epoch_length)
         
 except KeyboardInterrupt:
