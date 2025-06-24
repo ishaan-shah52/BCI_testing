@@ -8,85 +8,78 @@ from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.callbacks import ReduceLROnPlateau
 from sklearn.model_selection import train_test_split
 
-# -----------------------
-# 1. Data Preprocessing & Epoching
-# -----------------------
+filtered_eeg = pd.read_csv('filtered_eeg_action_data.csv')
 
-# Load the CSV file
-df = pd.read_csv('filtered_eeg_action_data.csv')
+#start time at 0 for simplicity of analysis
+# filtered_eeg['Time_Relative'] = filtered_eeg['Time'] - filtered_eeg['Time'].iloc[0]
+filtered_eeg['Time_Relative'] = filtered_eeg['Time'] - filtered_eeg['Time'].min()
 
-# Rebase time so that the first time stamp is zero.
-df['Time_Relative'] = df['Time'] - df['Time'].min()
+#Two seconds for each sample
+epoch_length = 2.0
 
-# Define the desired epoch length (in seconds)
-epoch_length = 3.0
+#Making buckets with floor division
+filtered_eeg['Epoch_Index'] = (filtered_eeg['Time_Relative'] // epoch_length).astype(int)
+epochs = filtered_eeg.groupby('Epoch_Index')
 
-# Create an epoch index by doing floor division on the relative time
-df['Epoch_Index'] = (df['Time_Relative'] // epoch_length).astype(int)
+min_len_required = 12         # 3 rows = kernel height of first Conv2D
 
-# Group the data by epoch index
-epochs = df.groupby('Epoch_Index')
-
-# Collect epochs where the label remains consistent
 consistent_epochs = []
 for epoch_idx, group in epochs:
-    unique_labels = group['Label'].unique()
-    if len(unique_labels) == 1:
+    one_label = len(group['Label'].unique()) == 1 #cant mix labels, might change this, but for now just discard if mixed
+    long_enough = len(group) >= min_len_required #has to have a certain amount of rows for kernel   
+    if one_label and long_enough:
         consistent_epochs.append(group)
+    #debugging
     else:
-        print(f"Epoch {epoch_idx} discarded: multiple labels found {unique_labels}")
+        print(f"Epoch {epoch_idx} discarded "
+              f"(rows={len(group)}, labels={group['Label'].unique()})")
 
 print(f"Collected {len(consistent_epochs)} consistent epochs.")
 
-# -----------------------
-# 2. Prepare Data for the CNN
-# -----------------------
-
-# Convert EEG data into a 2D format (time x channels)
+# training and labeled data
 X_list = []
 y = []
 for epoch in consistent_epochs:
-    # Extract all available EEG channels as features (assuming they are labeled in the dataset)
-    channel_cols = [col for col in df.columns if 'Filtered Channel' in col]
+    # Extract all available EEG channels as features
+    channel_cols = [col for col in filtered_eeg.columns if 'Filtered Channel' in col]
     epoch_data = epoch[channel_cols].values
     X_list.append(epoch_data)
     y.append(epoch['Label'].iloc[0])
 
-# Determine the minimum number of samples across all epochs
-min_samples = min(epoch.shape[0] for epoch in X_list)
+# maintain consistency with minimum number of samples per epoch
+min_samples = min(epoch.shape[0] for epoch in X_list) #first num is rows
 print("Minimum samples per epoch:", min_samples)
 
-# Truncate each epoch to have the same number of samples
-X_fixed = [epoch[:min_samples] for epoch in X_list]
+X_fixed = [epoch[:min_samples] for epoch in X_list] #truncate
 
-# Convert list of arrays into a single numpy array
 X = np.array(X_fixed)  # Shape: (num_epochs, min_samples, num_channels)
 y = np.array(y)
 
 print("Shape of X (epochs):", X.shape)  # Expected: (num_epochs, time_samples, num_channels)
 print("Unique labels:", np.unique(y))
 
-# Map string labels to integer indices
+print("check here")
+
+# Map string labels to integer indices for CNN
 label_map = {label: idx for idx, label in enumerate(np.unique(y))}
 y_int = np.array([label_map[label] for label in y])
 num_classes = len(label_map)
 print("Label mapping:", label_map)
 
-unique, counts = np.unique(y_int, return_counts=True)
-print("Class distribution:", dict(zip(unique, counts)))
+unique, counts = np.unique(y_int, return_counts=True) #gives a count for appearance of all
+print("Class distribution:", dict(zip(unique, counts))) #need to see if data points for each label distributed equally, dict makes readable
 
-# Convert labels to one-hot encoding
+#one-hot encoding
 y_cat = to_categorical(y_int, num_classes=num_classes)
 
-# Reshape X for CNN input (adding an extra channel dimension for Conv2D)
+"""
+Using Conv2D for spatial and temporal instead of Conv1D just for time per channel 
+"""
+
+# Conv2D expects (batch_size, height, width, channels) or (amount of epochs, time samples, channels, 1)
 X = X.reshape(X.shape[0], X.shape[1], X.shape[2], 1)  # Shape: (num_epochs, time_samples, num_channels, 1)
 
-# Split the data into training and testing sets
 X_train, X_test, y_train, y_test = train_test_split(X, y_cat, test_size=0.2, random_state=42)
-
-# -----------------------
-# 3. Build the CNN (Following the Paper's Approach)
-# -----------------------
 
 input_shape = X_train.shape[1:]  # (time_samples, num_channels, 1)
 

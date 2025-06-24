@@ -48,7 +48,7 @@ helper_df = filtered_eeg.copy()
 
 #shift(1) shifts the whole row down by one with a NaN in the first row
 helper_df['Label_Change'] = helper_df['Label'] != helper_df['Label'].shift(1) #true or false column
-helper_df['Segment'] = helper_df['Label_Change'].cumsum() #keep a running count of True
+helper_df['Segment'] = helper_df['Label_Change'].cumsum() #this IDs the rows automatically by keeping a running sum of Trues
 
 # Create subplots: one for the EEG data and one for the label timeline.
 fig, (ax1, ax2) = plt.subplots(
