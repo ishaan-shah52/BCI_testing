@@ -81,36 +81,37 @@ X = X.reshape(X.shape[0], X.shape[1], X.shape[2], 1)  # Shape: (num_epochs, time
 
 X_train, X_test, y_train, y_test = train_test_split(X, y_cat, test_size=0.2, random_state=42)
 
+#CNN start
 input_shape = X_train.shape[1:]  # (time_samples, num_channels, 1)
 
-model = Sequential()
+model = Sequential() #do steps in order
 
-# First Layer (Spatial feature extraction)
+# spatial x temporal, looking for 8 patterns
 model.add(Conv2D(filters=8, kernel_size=(3, X.shape[2]), activation='relu', input_shape=input_shape, padding='valid'))
-model.add(BatchNormalization())
+model.add(BatchNormalization()) #rescale data
 
-# Second Layer (Temporal feature extraction)
+#just temporal, for 16 features for each of 8 filters above
 model.add(SeparableConv2D(filters=16, kernel_size=(5, 1), activation='relu', padding='same'))
-model.add(MaxPooling2D(pool_size=(2, 1)))
+model.add(MaxPooling2D(pool_size=(2, 1))) #keep what matters most
 
-# Third Layer (Deeper feature extraction)
+#deeper temporal to catch more patterns
 model.add(Conv2D(filters=64, kernel_size=(5, 1), activation='relu', padding='same'))
 model.add(Conv2D(filters=128, kernel_size=(3, 1), activation='relu', padding='same'))
 model.add(MaxPooling2D(pool_size=(2, 1)))
 
-# Flatten and Fully Connected Layers
-model.add(Flatten())
+model.add(Flatten()) #single vector
 model.add(Dense(150, activation='relu'))
-model.add(Dropout(0.25))
-model.add(Dense(num_classes, activation='softmax'))
+model.add(Dropout(0.25)) #decrease overfitting
+model.add(Dense(num_classes, activation='softmax')) #output
 
 # Compile the Model
+#Adam since it scales off of history of gradients
 model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.0005), loss='categorical_crossentropy', metrics=['accuracy'])
 
 # Train with a Learning Rate Scheduler
 history = model.fit(X_train, y_train, epochs=50, batch_size=8, validation_data=(X_test, y_test), callbacks=[ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=3, verbose=1)])
 
-# Evaluate Model
+#validate
 loss, accuracy = model.evaluate(X_test, y_test)
 print("Test loss:", loss)
 print("Test accuracy:", accuracy)
