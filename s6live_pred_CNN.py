@@ -53,20 +53,11 @@ try:
             continue  # not enough data yet
 
         #Slice out only the EEG rows = (samples, 4)
-        epoch = raw[eeg_channels, :].T
+        epoch = raw[[2, 3, 4, 5], :].T
 
         
         # Preprocess: filter + z-score
         epoch = preprocess(epoch)
-
-        # Select the channels you want to use (for example, filtered EEG channels)
-        # Adjust channel indices as needed. Here, we're assuming channels 4 and 5 are your filtered channels.
-        # (Indices may differ depending on how your CSV was structured.)
-        selected_channels = [4, 5]
-        epoch_data = data[selected_channels, :].T  # Now shape: (samples_per_epoch, num_channels)
-        
-        # Preprocess the data to match the model's expected input
-        epoch_data = preprocess(epoch_data)
 
         #trim to match training data
         if epoch.shape[0] > min_samples:
