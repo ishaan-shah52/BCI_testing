@@ -1,5 +1,5 @@
 import pandas as pd
-
+import numpy as np
 # gives digital filters
 from scipy.signal import butter, filtfilt, iirnotch
 
@@ -13,37 +13,32 @@ due to two vertices of full wave rule
 aliasing: sampling illusion
 """
 
-filename = 'combined_eeg_data_continuous.csv' 
+filename = 'combined_eeg_data.csv' 
 combined_eeg = pd.read_csv(filename, header = None)
 
 print("Data preview:")
 print(combined_eeg.head())
 
-# Assign proper column names, learned from OpenBCI 
-combined_eeg.columns = [
-    'Time', 'Marker', 'EEG_Ch1', 'EEG_Ch2', 'EEG_Ch3', 'EEG_Ch4', 
-    'Aux1', 'Aux2', 'Aux3', 'Aux4', 'Other1', 'Other2', 'Other3', 'Other4', 'Epoch', 'Other', 'Label'
-]
+FS = 200           # Ganglion sampling rate
+LOWCUT = 0.5       # blink/eyebrow energy starts ~0.5 Hz
+HIGHCUT = 20.0     # EEG mostly < 20 Hz
+ORDER = 4
+DOWNSAMPLE_TO = 50 # set to None to skip; else 50 is good
 
-# Print to verify corrected column alignment
-print("\nCorrected Data Preview:")
-print(combined_eeg.head())
+rename_map = {0:'BoardTime', 1:'EEG_Ch1', 2:'EEG_Ch2', 3:'EEG_Ch3', 4:'EEG_Ch4', 5:'Label'}
+combined_eeg.rename(columns=rename_map, inplace=True)
 
-"""
-Currently using four electrodes:
-Channel 1: below left eye
-Channel 2: above left eye
-Channel 3: below right eye
-Channel 4: above right eye
-"""
+for col in ['BoardTime', 'EEG_Ch1', 'EEG_Ch2', 'EEG_Ch3', 'EEG_Ch4']:
+    combined_eeg[col] = pd.to_numeric(combined_eeg[col], errors='coerce')
 
-# Extract relevant columns: Time, Channels 1-4, Labels
-relevant_data = combined_eeg[['Time', 'EEG_Ch1', 'EEG_Ch2', 'EEG_Ch3', 'EEG_Ch4', 'Label']]
+# Drop rows with missing required fields
+combined_eeg.dropna(subset=['BoardTime', 'EEG_Ch1', 'EEG_Ch2', 'EEG_Ch3', 'EEG_Ch4', 'Label'], inplace=True)
 
-# Rename columns
-relevant_data.columns = ['Time', 'Channel 1', 'Channel 2', 'Channel 3', 'Channel 4', 'Label']
+# Detect optional metadata columns that might exist if you added them during combine
+has_session = 'session_id' in combined_eeg.columns
+has_file = 'file' in combined_eeg.columns
 
-print("got relevant columns")
+#FILTERING
 
 # Define the bandpass filter
 """
@@ -51,42 +46,53 @@ print("got relevant columns")
 -Helps remove motion artifacts or EMG noise
 -0.5-50 Hz
 """
-def bandpass_filter(data, lowcut, highcut, fs, order=4):
-    nyquist = 0.5 * fs  # Nyquist frequency
-    low = lowcut / nyquist
-    high = highcut / nyquist
+
+def butter_bandpass(lowcut, highcut, fs, order=4):
+    nyq = 0.5 * fs
+    low = lowcut / nyq
+    high = highcut / nyq
     b, a = butter(order, [low, high], btype='band')
-    return filtfilt(b, a, data)
+    return b, a
 
-# Define the notch filter
-"""
--removes a certain frequency
--can be used to remove powerline interference
-(not using for now)
-"""
-def notch_filter(data, notch_freq, fs, quality=30):
-    nyquist = 0.5 * fs
-    freq = notch_freq / nyquist
-    b, a = iirnotch(freq, quality)
-    return filtfilt(b, a, data)
+b, a = butter_bandpass(LOWCUT, HIGHCUT, FS, ORDER)
+channels = ['EEG_Ch1', 'EEG_Ch2', 'EEG_Ch3', 'EEG_Ch4']
 
-#Sampling rate
-fs = 200  # OpenBCI Ganglion sampling rate
+# If you kept session boundaries, filter per session to avoid edge artifacts across sessions
+if has_session:
+    def filt_group(g):
+        g = g.sort_values('BoardTime')
+        for ch in channels:
+            # filtfilt is zero-phase (great offline), requires enough samples
+            if len(g[ch]) > 3 * max(len(a), len(b)):
+                g[ch] = filtfilt(b, a, g[ch].to_numpy(), method='gust')
+            else:
+                # fallback: skip filtering for tiny groups
+                pass
+        return g
+    combined_eeg = combined_eeg.groupby('session_id', group_keys=False).apply(filt_group)
+else:
+    combined_eeg = combined_eeg.sort_values('BoardTime')
+    for ch in channels:
+        if len(combined_eeg[ch]) > 3 * max(len(a), len(b)):
+            combined_eeg[ch] = filtfilt(b, a, combined_eeg[ch].to_numpy(), method='gust')
 
-#Bandpass filter settings
-lowcut = 0.5  # Low cutoff frequency (Hz)
-highcut = 50  # High cutoff frequency (Hz)
+# -----------------------------
+# OPTIONAL DOWNSAMPLE (after LP filtering)
+# Simple stride downsample is OK here because HIGHCUT<=15 Hz and FS→50 Hz.
+# -----------------------------
+if DOWNSAMPLE_TO is not None and DOWNSAMPLE_TO < FS and FS % DOWNSAMPLE_TO == 0:
+    step = FS // DOWNSAMPLE_TO
 
-# Notch filter settings
-# notch_freq = 60  # Notch filter frequency (Hz)
+    def downsample_block(g):
+        return g.iloc[::step].copy()
 
-relevant_data['Filtered Channel 1'] = bandpass_filter(relevant_data['Channel 1'], lowcut, highcut, fs)
-relevant_data['Filtered Channel 2'] = bandpass_filter(relevant_data['Channel 2'], lowcut, highcut, fs)
-relevant_data['Filtered Channel 3'] = bandpass_filter(relevant_data['Channel 3'], lowcut, highcut, fs)
-relevant_data['Filtered Channel 4'] = bandpass_filter(relevant_data['Channel 4'], lowcut, highcut, fs)
+    if has_session:
+        combined_eeg = combined_eeg.groupby('session_id', group_keys=False).apply(downsample_block)
+    else:
+        combined_eeg = combined_eeg.iloc[::step].copy()
 
 # Save the filtered data to a new CSV file
 output_filename = 'filtered_eeg_action_data.csv'
-relevant_data.to_csv(output_filename, index=False)
+combined_eeg.to_csv(output_filename, index=False)
 
 print(f"Filtered data saved to '{output_filename}'")

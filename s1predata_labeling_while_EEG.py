@@ -3,6 +3,7 @@ import time
 import threading
 from pynput import keyboard
 from brainflow.board_shim import BoardShim, BrainFlowInputParams, BoardIds
+import datetime 
 
 #labels and associated numbers on keyboard
 labels = {
@@ -32,7 +33,6 @@ params = BrainFlowInputParams()
 params.mac_address = "D5:A4:BE:DD:BC:89"  #this was recieved from using python libraries in the previous step file (s0) so device is instantly found
 params.serial_port = "COM5"  
 board = BoardShim(BoardIds.GANGLION_BOARD.value, params)
-
 eeg_channels = BoardShim.get_eeg_channels(BoardIds.GANGLION_BOARD.value)
 
 # Function to update the current label based on keyboard input
