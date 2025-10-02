@@ -26,7 +26,7 @@ Channel 4: below right eye
 current_label = 'nothing' #the action happening at the time
 # start_time = time.time()
 eeg_data = []  #to store voltages from EEG
-label_events = [] #(board_time, label) on keypress
+# label_events = [] #(board_time, label) on keypress
 running = True
 
 #BrainFlow setup based on documentation: https://brainflow.readthedocs.io/en/stable/SupportedBoards.html#ganglion
@@ -48,10 +48,11 @@ def on_press(key):
     try:
         if key.char in labels: #by default checks the keys
             current_label = labels[key.char]
+            print(f"[LABEL] current_label -> {current_label}")
             #stamp a label event with most recent board timestamp: 2D array (channels x samples)
-            cur = board.get_current_board_data(1)
-            if cur.shape[1] > 0: #check if we got data, could return greater than 1 sample
-                label_events.append((cur[timestamps_channel, -1], current_label))
+            # cur = board.get_current_board_data(1)
+            # if cur.shape[1] > 0: #check if we got data, could return greater than 1 sample
+            #     label_events.append((cur[timestamps_channel, -1], current_label))
     except AttributeError:
         pass
 
@@ -76,28 +77,31 @@ def record_eeg():
     while running:
         eeg_samples = board.get_board_data()  # Get the all EEG samples unprocessed
         if eeg_samples.shape[1] > 0:  # Ensure data is available
+            label = current_label
             for i in range(eeg_samples.shape[1]):
                 timestamp = eeg_samples[timestamps_channel, i]  # Board timestamp
                 ch_values = [eeg_samples[ch, i] for ch in eeg_channels]
-                eeg_data.append((timestamp, *ch_values))
+                eeg_data.append((timestamp, *ch_values, label))
         time.sleep(0.05)  
 
-# Merge EEG data with labels based on timestamps
-def merge_data():
-    merged = []
-    if not eeg_data:
-        return merged
+# Merge EEG data with labels based on timestamps (NOT NEEDED IF LABEL WHILE RECORDING), slight offset of data
+# def merge_data():
+#     merged = []
+#     if not eeg_data:
+#         return merged
     
-    #have eeg samples and find the nearest time point in label events to label that eeg sample
-    if label_events:
-        j = 0
-        m = len(label_events)
-        for sample in eeg_data:
-            time_stamp = sample[0]
-            while j + 1 < m and abs(label_events[j + 1][0] - time_stamp) <= abs(label_events[j][0] - time_stamp):
-                j += 1
-            merged.append((*sample, label_events[j][1]))
-        return merged        
+#     if not label_events:
+#         return [(row[0], *row[1:], "nothing") for row in eeg_data]
+    
+#     #have eeg samples and find the nearest time point in label events to label that eeg sample
+#     j = 0
+#     m = len(label_events)
+#     for sample in eeg_data:
+#         time_stamp = sample[0]
+#         while j + 1 < m and abs(label_events[j + 1][0] - time_stamp) <= abs(label_events[j][0] - time_stamp):
+#             j += 1
+#         merged.append((*sample, label_events[j][1]))
+#     return merged        
 
     # # Align wall clock labels with board timestamps
     # first_board_time = eeg_data[0][0]
@@ -162,9 +166,9 @@ def main():
         board.stop_stream()
 
         # Merge data and save to CSV
-        print("Merging EEG data with labels...")
-        merged_data = merge_data()
-        save_to_csv('eeg_sessions/eeg_action_data_1.csv', merged_data) #change both of these lines
+        # print("Merging EEG data with labels...")
+        # merged_data = merge_data()
+        save_to_csv('eeg_sessions/eeg_action_data_1.csv', eeg_data) #change both of these lines
         print("Data saved to 'eeg_action_data_1.csv'") #this one
         print("change these file numbers now")
 
