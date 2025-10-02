@@ -1,97 +1,73 @@
 import matplotlib.pyplot as plt
 import pandas as pd
+import numpy as np
 
-#post filtering
-filename = 'filtered_eeg_action_data.csv'
-filtered_eeg = pd.read_csv(filename)
+FILE = "filtered_eeg_action_data.csv"
+TIME_COL = "BoardTime"
+CH_COLS  = ["EEG_Ch1","EEG_Ch2","EEG_Ch3","EEG_Ch4"]
+LABEL_COL= "Label"
 
-#quick check
-print("Dataset preview:")
-print(filtered_eeg.head())
+filtered_eeg = pd.read_csv(FILE)
+filtered_eeg = filtered_eeg.sort_values(["session_id", TIME_COL])
 
-# Get time, labels, and the filtered EEG channels columns
-time = filtered_eeg['Time']
-labels = filtered_eeg['Label']
+#continous label segments: returns [(label, start, stop), ...]
+def label_segments(labels: np.ndarray, time: np.ndarray):
+    change = labels != np.roll(labels, 1) #marks where labels are not the same, by rolling the label column by 1
+    change[0] = True
+    seg_id = np.cumsum(change) - 1
+    for sid in np.unique(seg_id):
+        m = (seg_id == sid)
+        yield labels[m][0], time[m][0], time[m][-1] #finds where all the segments start and stop
 
-filtered_cols = [
-    'Filtered Channel 1',
-    'Filtered Channel 2',
-    'Filtered Channel 3',
-    'Filtered Channel 4'
-]
+#plotting a smaller number of points for speed, plot 10000 data points max with stride
+def decimate_for_plot(df_sess: pd.DataFrame, max_pts: int = 10000):
+    if len(df_sess) <= max_pts:
+        return df_sess
+    step = max(1, len(df_sess) // max_pts)
+    return df_sess.iloc[::step].copy()
 
-channels = filtered_eeg[filtered_cols]
+#plot one session
+def plot_session(df_all: pd.DataFrame, session_id: int, title_suffix: str = "", max_plot_pts: int = 12000):
+    g = df_all[df_all["session_id"] == session_id]
+    if g.empty:
+        print(f"No rows for session_id={session_id}")
+        return
+    g = decimate_for_plot(g, max_pts=max_plot_pts)
 
-#corresponds to colored wires I am using
-channel_colors = {
-    'Filtered Channel 1': 'green',
-    'Filtered Channel 2': 'yellow',
-    'Filtered Channel 3': 'orange',
-    'Filtered Channel 4': 'red'
-}
+    time = g[TIME_COL].to_numpy()
+    labels = g[LABEL_COL].astype(str).to_numpy()
 
-#mapping from label to a color
-label_colors = {
-    'nothing': 'gray',
-    'left_blink': 'blue',
-    'right_blink': 'red',
-    'both_blink': 'purple',
-    'eyebrow_raise': 'green'
-}
+    fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True, figsize=(14, 8),
+                                   gridspec_kw={"height_ratios":[4,1]})
 
-#Create a copy of the data for segmenting labels
-# essentially this is a helper dataframe
-helper_df = filtered_eeg.copy()
+    # EEG traces
+    for ch in CH_COLS:
+        ax1.plot(time, g[ch].to_numpy(), linewidth=0.7, label=ch, rasterized=True)
+    ax1.set_ylabel("Amplitude (µV)")
+    ax1.set_title(f"Filtered EEG (0.5–20 Hz) — session {session_id}{title_suffix}")
+    ax1.grid(True, alpha=0.3)
+    ax1.legend(loc="upper right")
 
-# Identify segments where the label is constant.
-# A new segment starts when the label changes compared to the previous row.
+    # nice y-lims
+    y = g[CH_COLS].to_numpy()
+    ymin, ymax = float(np.min(y)), float(np.max(y))
+    pad = 0.05 * (ymax - ymin + 1e-12)
+    ax1.set_ylim(ymin - pad, ymax + pad)
 
-#shift(1) shifts the whole row down by one with a NaN in the first row
-helper_df['Label_Change'] = helper_df['Label'] != helper_df['Label'].shift(1) #true or false column
-helper_df['Segment'] = helper_df['Label_Change'].cumsum() #this IDs the rows automatically by keeping a running sum of Trues
+    # label timeline
+    for lab, t0, t1 in label_segments(labels, time):
+        ax2.axvspan(t0, t1, alpha=0.28)
+        ax2.text((t0+t1)/2, 0.5, lab, ha="center", va="center",
+                 fontsize=9, transform=ax2.get_xaxis_transform())
 
-# Create subplots: one for the EEG data and one for the label timeline.
-fig, (ax1, ax2) = plt.subplots(
-    2, 1,                     # 2 rows, 1 column
-    sharex=True,              # both rows share the same x-axis
-    figsize=(12, 8),          # width x height in inches
-    gridspec_kw={'height_ratios': [4, 1]}  # top panel 4× taller than bottom
-)
+    ax2.set_title("Label timeline")
+    ax2.set_yticks([])
+    ax2.set_xlabel("Time (s)")
 
-# Plot the EEG channels on the first subplot.
-for col in filtered_cols: #4 channels
-    ax1.plot(time,
-             channels[col],
-             label=col,
-             color=channel_colors.get(col, 'black'))
+    plt.tight_layout()
+    plt.show()
 
-ax1.set_ylabel('Amplitude (µV)')
-ax1.set_title('Filtered EEG: Channels 1-4')
-ax1.set_ylim(-5000, 5000)  
-ax1.legend(loc='upper right')
-ax1.grid(True)
-
-# Plot the label timeline on the second subplot.
-# For each continuous segment with the same label, fill that time range with a color.
-segments = helper_df.groupby('Segment')
-for seg, group in segments:
-    seg_label = group['Label'].iloc[0]
-    start_time = group['Time'].iloc[0]
-    end_time = group['Time'].iloc[-1]
-    color = label_colors.get(seg_label, 'black')  # Default to black if label not found
-
-    # Fill the background for this label segment.
-    ax2.axvspan(start_time, end_time, color=color, alpha=0.5)
-    
-    # Optionally, place the label text in the middle of the segment.
-    mid_time = (start_time + end_time) / 2
-    ax2.text(mid_time, 0.5, seg_label,
-             horizontalalignment='center', verticalalignment='center',
-             fontsize=10, color='white', transform=ax2.get_xaxis_transform())
-
-ax2.set_yticks([])  # Hide y-axis ticks on the label timeline.
-ax2.set_xlabel('Time (s)')
-ax2.set_title('Label Timeline')
-
-plt.tight_layout()
-plt.show()
+#sessions i wanna inspect
+session_ids = sorted(filtered_eeg["session_id"].unique())
+for sid in session_ids[:2]: 
+    plot_session(filtered_eeg, sid)
