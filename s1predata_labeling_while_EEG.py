@@ -4,6 +4,7 @@ import threading
 from pynput import keyboard
 from brainflow.board_shim import BoardShim, BrainFlowInputParams, BoardIds
 import datetime 
+import os
 
 #labels and associated numbers on keyboard
 labels = {
@@ -15,32 +16,42 @@ labels = {
 }
 
 """
-Recording set up:
+Recording set up for consistency:
 Channel 1: above left eye
 Channel 2: below left eye
 Channel 3: above right eye
 Channel 4: below right eye
 """
 
-current_label = 'nothing'
+current_label = 'nothing' #the action happening at the time
 # start_time = time.time()
-label_data = []  #for storing time and actions
 eeg_data = []  #to store voltages from EEG
+label_events = [] #(board_time, label) on keypress
 running = True
 
 #BrainFlow setup based on documentation: https://brainflow.readthedocs.io/en/stable/SupportedBoards.html#ganglion
 params = BrainFlowInputParams()
 params.mac_address = "D5:A4:BE:DD:BC:89"  #this was recieved from using python libraries in the previous step file (s0) so device is instantly found
 params.serial_port = "COM5"  
+
+#brain flow helper functions: https://brainflow.readthedocs.io/en/stable/DataFormatDesc.html
 board = BoardShim(BoardIds.GANGLION_BOARD.value, params)
-eeg_channels = BoardShim.get_eeg_channels(BoardIds.GANGLION_BOARD.value)
+eeg_channels = BoardShim.get_eeg_channels(BoardIds.GANGLION_BOARD.value) #gets index of eeg channels
+timestamps_channel = BoardShim.get_timestamp_channel(BoardIds.GANGLION_BOARD.value) #gets index of time channel
+print(eeg_channels)
+print(timestamps_channel)
+
 
 # Function to update the current label based on keyboard input
 def on_press(key):
     global current_label
     try:
-        if key.char in labels:
+        if key.char in labels: #by default checks the keys
             current_label = labels[key.char]
+            #stamp a label event with most recent board timestamp: 2D array (channels x samples)
+            cur = board.get_current_board_data(1)
+            if cur.shape[1] > 0: #check if we got data, could return greater than 1 sample
+                label_events.append((cur[timestamps_channel, -1], current_label))
     except AttributeError:
         pass
 
@@ -50,14 +61,14 @@ def on_release(key):
         # Stop listener
         return False
 
-#Timer to also record labels
-def record_labels():
-    global running 
-    while running:
-        elapsed_time = time.time()
-        label_data.append((elapsed_time, current_label))
-        print(f"Time: {elapsed_time:.1f} s, Label: {current_label}") #.1f is a floating point to one decimal place
-        time.sleep(0.1) #record every 0.1 seconds
+# #Timer to also record labels
+# def record_labels():
+#     global running 
+#     while running:
+#         elapsed_time = time.time()
+#         label_data.append((elapsed_time, current_label))
+#         print(f"Time: {elapsed_time:.1f} s, Label: {current_label}") #.1f is a floating point to one decimal place
+#         time.sleep(0.1) #record every 0.1 seconds
 
 #record EEG data
 def record_eeg():
@@ -66,7 +77,7 @@ def record_eeg():
         eeg_samples = board.get_board_data()  # Get the all EEG samples unprocessed
         if eeg_samples.shape[1] > 0:  # Ensure data is available
             for i in range(eeg_samples.shape[1]):
-                timestamp = eeg_samples[-1, i]  # Board timestamp
+                timestamp = eeg_samples[timestamps_channel, i]  # Board timestamp
                 ch_values = [eeg_samples[ch, i] for ch in eeg_channels]
                 eeg_data.append((timestamp, *ch_values))
         time.sleep(0.05)  
@@ -74,25 +85,37 @@ def record_eeg():
 # Merge EEG data with labels based on timestamps
 def merge_data():
     merged = []
-    if not eeg_data or not label_data:
+    if not eeg_data:
         return merged
+    
+    #have eeg samples and find the nearest time point in label events to label that eeg sample
+    if label_events:
+        j = 0
+        m = len(label_events)
+        for sample in eeg_data:
+            time_stamp = sample[0]
+            while j + 1 < m and abs(label_events[j + 1][0] - time_stamp) <= abs(label_events[j][0] - time_stamp):
+                j += 1
+            merged.append((*sample, label_events[j][1]))
+        return merged        
 
-    # Align wall clock labels with board timestamps
-    first_board_time = eeg_data[0][0]
-    first_wall_time = label_data[0][0]
-    time_offset = first_wall_time - first_board_time  # difference in seconds
+    # # Align wall clock labels with board timestamps
+    # first_board_time = eeg_data[0][0]
+    # first_wall_time = label_data[0][0]
+    # time_offset = first_wall_time - first_board_time  # difference in seconds
 
-    for sample in eeg_data:
-        board_time = sample[0]
-        # Convert board time to wall time
-        wall_time_est = board_time + time_offset
-        # Find nearest label
-        closest_label = min(label_data, key=lambda x: abs(x[0] - wall_time_est))
-        merged.append((*sample, closest_label[1]))
-    return merged
+    # for sample in eeg_data:
+    #     board_time = sample[0]
+    #     # Convert board time to wall time
+    #     wall_time_est = board_time + time_offset
+    #     # Find nearest label
+    #     closest_label = min(label_data, key=lambda x: abs(x[0] - wall_time_est))
+    #     merged.append((*sample, closest_label[1]))
+    # return merged
 
 #CSV file
 def save_to_csv(filename, merged_data):
+    os.makedirs(os.path.dirname(filename), exist_ok=True)  # make sure file path exists, but dont need
     with open(filename, mode='w', newline='') as file:
         writer = csv.writer(file)
         writer.writerow(['BoardTime', 'EEG_Ch1', 'EEG_Ch2', 'EEG_Ch3', 'EEG_Ch4', 'Label'])
@@ -101,23 +124,25 @@ def save_to_csv(filename, merged_data):
 # Main function to start EEG and label recording
 def main():
     global running
+    listener = None   
+    eeg_thread = None
     try:
         print("Preparing session...")
         board.prepare_session()
 
         print("Starting EEG data stream...")
-        board.start_stream()
+        board.start_stream(60000) # enough for around 5but  minutes
 
         #use threading for least delay between collection of data
-        label_thread = threading.Thread(target=record_labels)
+        # label_thread = threading.Thread(target=record_labels)
         eeg_thread = threading.Thread(target=record_eeg)
-        label_thread.start()
+        # label_thread.start()
         eeg_thread.start()
 
         # Start listening for keyboard input in a non-blocking way
         listener = keyboard.Listener(on_press=on_press, on_release=on_release)
         listener.start()
-        print("Press keys to label actions (1: left_blink, 2: right_blink, etc.)")
+        print("Press keys to label actions (1 - 5)")
         print("Press ESC to stop recording, or Ctrl+C to force exit.")
 
         # Keep the main thread alive, but allow KeyboardInterrupt to be caught
@@ -130,7 +155,7 @@ def main():
         # Ensure threads and board stream are stopped
         running = False
         listener.stop()
-        label_thread.join()
+        # label_thread.join()
         eeg_thread.join()
 
         print("Stopping EEG data stream...")
