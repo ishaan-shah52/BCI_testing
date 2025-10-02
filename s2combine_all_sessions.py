@@ -20,3 +20,5 @@ if not eachEEG:
 allEEG = pd.concat(eachEEG, ignore_index=True) #puts all files tg
 allEEG.to_csv("combined_eeg_data.csv", index=False)
 print("Combined -> combined_eeg_data.csv")
+
+print("Final shape:", allEEG.shape)
