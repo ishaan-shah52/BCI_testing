@@ -11,6 +11,7 @@ eachEEG = []
 
 for idx, file in enumerate(file_list):
     EEG_file = pd.read_csv(file, header=0)
+    EEG_file["session_id"] = idx
     eachEEG.append(EEG_file) #array of all files
 
 if not eachEEG:
