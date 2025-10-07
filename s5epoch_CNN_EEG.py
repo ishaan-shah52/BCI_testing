@@ -1,120 +1,152 @@
-import pandas as pd
 import numpy as np
-import tensorflow as tf
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Conv2D, SeparableConv2D, MaxPooling2D, Flatten, Dense, Dropout, BatchNormalization
-from tensorflow.keras.utils import to_categorical
-from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.callbacks import ReduceLROnPlateau
+import pandas as pd
 from sklearn.model_selection import train_test_split
+from tensorflow.keras.utils import to_categorical
+from tensorflow.keras import layers, models, optimizers, callbacks
 
-filtered_eeg = pd.read_csv('filtered_eeg_action_data.csv')
+CSV = "filtered_eeg_action_data.csv"
+TIME = "BoardTime"
+CHANNELS = ["EEG_Ch1","EEG_Ch2","EEG_Ch3","EEG_Ch4"]
+LABEL = "Label"
+SESSION = "session_id"
 
-#start time at 0 for simplicity of analysis
-# filtered_eeg['Time_Relative'] = filtered_eeg['Time'] - filtered_eeg['Time'].iloc[0]
-filtered_eeg['Time_Relative'] = filtered_eeg['Time'] - filtered_eeg['Time'].min()
+FS = 50 #sampling frequency: downsampled to 50 Hz
+WINDOW  = 2.0 # window length (seconds)
+STRIDE_S = 0.5 #overlap between windows    
+SPW = int(WINDOW * FS) #samples per window
+SAMPLE_SLIDE = int(STRIDE_S * FS) #sample slide
 
-#Two seconds for each sample
-epoch_length = 2.0
+filtered_eeg = pd.read_csv(CSV)
 
-#Making buckets with floor division
-filtered_eeg['Epoch_Index'] = (filtered_eeg['Time_Relative'] // epoch_length).astype(int)
-epochs = filtered_eeg.groupby('Epoch_Index')
+#label encoding: assigning labels to values
+labels_sorted = sorted(filtered_eeg[LABEL].unique()) #arbitrary sort
+label2id = {l:i for i,l in enumerate(labels_sorted)}
+num_classes = len(labels_sorted)
+print("Label map:", label2id)
 
-min_len_required = 12         # 3 rows = kernel height of first Conv2D
+#windowing by session
+X, Y, S = [], [], [] # data is eeg windows, labels is the actions, keeping track of session
+for sid, g in filtered_eeg.groupby(SESSION): #cant have sessions overlap
+    g = g.reset_index(drop=True)
+    n = len(g)
+    lab_arr = g[LABEL].map(label2id).to_numpy() #string labels to int classes
+    sig = g[CHANNELS].to_numpy(dtype=np.float32)  # shape (N, 4)
 
-consistent_epochs = []
-for epoch_idx, group in epochs:
-    one_label = len(group['Label'].unique()) == 1 #cant mix labels, might change this, but for now just discard if mixed
-    long_enough = len(group) >= min_len_required #has to have a certain amount of rows for kernel   
-    if one_label and long_enough:
-        consistent_epochs.append(group)
-    #debugging
-    else:
-        print(f"Epoch {epoch_idx} discarded "
-              f"(rows={len(group)}, labels={group['Label'].unique()})")
+    start = 0
+    while start + SPW <= n:
+        seg = sig[start:start+SPW]          # (SPW, 4)
+        labs = lab_arr[start:start+SPW]     # (SPW,)
+        # Majority label in the window
+        lab_id = np.bincount(labs, minlength=num_classes).argmax()
 
-print(f"Collected {len(consistent_epochs)} consistent epochs.")
+        # CNN expects (time, channels, 1) or (channels, time, 1).
+        # use (time, channels, 1)
+        X.append(seg[:, :].reshape(SPW, len(CHANNELS), 1))
+        Y.append(lab_id)
+        S.append(sid)   
 
-# training and labeled data
-X_list = []
-y = []
-for epoch in consistent_epochs:
-    # Extract all available EEG channels as features
-    channel_cols = [col for col in filtered_eeg.columns if 'Filtered Channel' in col]
-    epoch_data = epoch[channel_cols].values
-    X_list.append(epoch_data)
-    y.append(epoch['Label'].iloc[0])
+        start += SAMPLE_SLIDE
 
-# maintain consistency with minimum number of samples per epoch
-min_samples = min(epoch.shape[0] for epoch in X_list) #first num is rows
-print("Minimum samples per epoch:", min_samples)
+X = np.stack(X)   # (num_windows, WIN, 4, 1)
+Y = to_categorical(np.array(Y), num_classes=num_classes)
+S = np.array(S)   # (num_windows,)
+print("X shape:", X.shape, "Y shape:", Y.shape)
 
-X_fixed = [epoch[:min_samples] for epoch in X_list] #truncate
 
-X = np.array(X_fixed)  # Shape: (num_epochs, min_samples, num_channels)
-y = np.array(y)
+# Train/Val split (by session to prevent leakage)
 
-print("Shape of X (epochs):", X.shape)  # Expected: (num_epochs, time_samples, num_channels)
-print("Unique labels:", np.unique(y))
+# Split on session ids (not random windows)
+unique_sess = np.unique(S)
+train_sess, val_sess = train_test_split(unique_sess, test_size=0.25, random_state=42)
+train_mask = np.isin(S, train_sess) #use a mask to find out which session in training or testing
+val_mask   = np.isin(S, val_sess)
 
-print("check here")
+X_train, Y_train = X[train_mask], Y[train_mask]
+X_val,   Y_val   = X[val_mask],   Y[val_mask]
+print("Train windows:", len(X_train), "Val windows:", len(X_val))
 
-# Map string labels to integer indices for CNN
-label_map = {label: idx for idx, label in enumerate(np.unique(y))}
-y_int = np.array([label_map[label] for label in y])
-num_classes = len(label_map)
-print("Label mapping:", label_map)
+# Minimal EEGNet-like model
+# Input: (time, channels, 1)
+#parameters: n_times is samples per window, channels, class labels
+def build_eegnet_like(n_times, n_ch, n_classes,
+                      F1=8, D=2, F2=16, drop1=0.25, drop2=0.25):
+    inp = layers.Input(shape=(n_times, n_ch, 1))
 
-unique, counts = np.unique(y_int, return_counts=True) #gives a count for appearance of all
-print("Class distribution:", dict(zip(unique, counts))) #need to see if data points for each label distributed equally, dict makes readable
+    #start with temporal patterns like blink shape
+    """
+    Notes:
+    -sampling rate: 50 hz --> 20 ms
+    -doesnt mix with channels yet, just 16 samples: which should capture an action --> 16 * 20 ms = 320
+    -F1 = 8: learns 8 temporal filters
+    -no shrinking yet
+    -batch normalization for each feature for consistent range, always after 2D conv
+    --keeps activations in a good range, reduce internal covariate shift
+    """
+    x = layers.Conv2D(F1, kernel_size=(16, 1), padding='same', use_bias=False)(inp) 
+    x = layers.BatchNormalization()(x)
 
-#one-hot encoding
-y_cat = to_categorical(y_int, num_classes=num_classes)
+    #spatial combine across channels
+    """
+    Notes:
+    starting from (100, 4, 8)
+    -each sample for all channels, 2 spatial filters per temporal feature
+    --depthwise keeps parameters tiny instead of high
+    -stabilization from batch normalization
+    -elu works well with EEG for negative activations
+    -pool time by 4x for nice even number to increase temporal receptive field for later
+    -randomly drops features at end to prevent overfitting
+    """
+    x = layers.DepthwiseConv2D(kernel_size=(1, n_ch), depth_multiplier=D,
+                               use_bias=False, depthwise_constraint=None)(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.Activation('elu')(x)
+    x = layers.AveragePooling2D(pool_size=(4, 1))(x)
+    x = layers.SpatialDropout2D(drop1)(x)
 
-"""
-Using Conv2D for spatial and temporal instead of Conv1D just for time per channel 
-"""
+    #combines spatial mix with temporal aspect
+    """
+    Notes:
+    -separableconv applies temporal filter to each input feature and mixes outputs
+    --cuts parameters
+    -stabilize with batch, pool by 4x again for recpetive field, shrink compute, dropout to help overfitting problem
+    bascially looking at the temporal dimension for each spatial feature
+    """
+    x = layers.SeparableConv2D(F2, kernel_size=(16, 1), padding='same', use_bias=False)(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.Activation('elu')(x)
+    x = layers.AveragePooling2D(pool_size=(4, 1))(x)
+    x = layers.SpatialDropout2D(drop2)(x)
 
-# Conv2D expects (batch_size, height, width, channels) or (amount of epochs, time samples, channels, 1)
-X = X.reshape(X.shape[0], X.shape[1], X.shape[2], 1)  # Shape: (num_epochs, time_samples, num_channels, 1)
+    x = layers.Flatten()(x) #make into one final vector
+    out = layers.Dense(n_classes, activation='softmax')(x) #probability for classification
 
-X_train, X_test, y_train, y_test = train_test_split(X, y_cat, test_size=0.2, random_state=42)
+    model = models.Model(inputs=inp, outputs=out)
+    opt = optimizers.Adam(learning_rate=1e-3) #good optimizer for adaptable gradient descent
+    model.compile(optimizer=opt, loss='categorical_crossentropy', metrics=['accuracy'])
+    return model
 
-#CNN start
-input_shape = X_train.shape[1:]  # (time_samples, num_channels, 1)
+model = build_eegnet_like(SPW, len(CHANNELS), num_classes)
+model.summary()
 
-model = Sequential() #do steps in order
+# --------------------
+# Train
+# --------------------
+es = callbacks.EarlyStopping(patience=10, restore_best_weights=True, monitor='val_accuracy')
+hist = model.fit(
+    X_train, Y_train,
+    validation_data=(X_val, Y_val),
+    epochs=50,
+    batch_size=64,
+    callbacks=[es],
+    verbose=1
+)
 
-# spatial x temporal, looking for 8 patterns
-model.add(Conv2D(filters=8, kernel_size=(3, X.shape[2]), activation='relu', input_shape=input_shape, padding='valid'))
-model.add(BatchNormalization()) #rescale data
+# --------------------
+# Evaluate
+# --------------------
+val_loss, val_acc = model.evaluate(X_val, Y_val, verbose=0)
+print(f"Val acc: {val_acc:.3f}")
 
-#just temporal, for 16 features for each of 8 filters above
-model.add(SeparableConv2D(filters=16, kernel_size=(5, 1), activation='relu', padding='same'))
-model.add(MaxPooling2D(pool_size=(2, 1))) #keep what matters most
-
-#deeper temporal to catch more patterns
-model.add(Conv2D(filters=64, kernel_size=(5, 1), activation='relu', padding='same'))
-model.add(Conv2D(filters=128, kernel_size=(3, 1), activation='relu', padding='same'))
-model.add(MaxPooling2D(pool_size=(2, 1)))
-
-model.add(Flatten()) #single vector
-model.add(Dense(150, activation='relu'))
-model.add(Dropout(0.25)) #decrease overfitting
-model.add(Dense(num_classes, activation='softmax')) #output
-
-# Compile the Model
-#Adam since it scales off of history of gradients
-model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=0.0005), loss='categorical_crossentropy', metrics=['accuracy'])
-
-# Train with a Learning Rate Scheduler
-history = model.fit(X_train, y_train, epochs=50, batch_size=8, validation_data=(X_test, y_test), callbacks=[ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=3, verbose=1)])
-
-#validate
-loss, accuracy = model.evaluate(X_test, y_test)
-print("Test loss:", loss)
-print("Test accuracy:", accuracy)
 
 model.save('EEG_CNN_model.h5')
 print("Model saved as 'EEG_CNN_model.h5'")
