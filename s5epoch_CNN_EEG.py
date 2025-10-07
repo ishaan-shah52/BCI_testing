@@ -128,9 +128,8 @@ def build_eegnet_like(n_times, n_ch, n_classes,
 model = build_eegnet_like(SPW, len(CHANNELS), num_classes)
 model.summary()
 
-# --------------------
-# Train
-# --------------------
+#training
+#call back for watching model durinng validation set, if accuracy isnt improving stop training to prevent overfitting
 es = callbacks.EarlyStopping(patience=10, restore_best_weights=True, monitor='val_accuracy')
 hist = model.fit(
     X_train, Y_train,
@@ -141,12 +140,9 @@ hist = model.fit(
     verbose=1
 )
 
-# --------------------
 # Evaluate
-# --------------------
 val_loss, val_acc = model.evaluate(X_val, Y_val, verbose=0)
 print(f"Val acc: {val_acc:.3f}")
-
 
 model.save('EEG_CNN_model.h5')
 print("Model saved as 'EEG_CNN_model.h5'")
