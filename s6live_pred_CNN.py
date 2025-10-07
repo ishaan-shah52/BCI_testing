@@ -1,84 +1,164 @@
 import time
+import threading
+from collections import deque
+
 import numpy as np
-import tensorflow as tf
+from pynput import keyboard
+from scipy.signal import butter, sosfilt
+from tensorflow.keras.models import load_model
+
 from brainflow.board_shim import BoardShim, BrainFlowInputParams, BoardIds
-from brainflow.data_filter import DataFilter, FilterTypes
 
 #model
-model = tf.keras.models.load_model('EEG_CNN_model.h5')
+MODEL_PATH = "EEG_CNN_model.h5"
 
-#label mapping
-label_map = {0: 'nothing', 1: 'left_blink', 2: 'right_blink', 3: 'both_blink', 4: 'eyebrow_raise'}
+LABELS = ['both_blink', 'eyebrow_raise', 'left_blink', 'nothing', 'right_blink']
+
+# Raw board rate and preprocessing
+FS_RAW = 200
+LOWCUT, HIGHCUT, ORDER = 0.5, 20.0, 4
+FS = 50
+DECIM = FS_RAW // FS
+
+# Windowing (match training)
+WINDOW_S = 2.0        # seconds
+STRIDE_S = 0.5        # seconds
+SPW = int(WINDOW_S * FS)   # 100
+SAMPLE_SLIDE = int(STRIDE_S * FS)
 
 # Set up BrainFlow parameters
 params = BrainFlowInputParams()
 params.serial_port = "COM5"      
 params.mac_address = "D5:A4:BE:DD:BC:89" 
-board = BoardShim(BoardIds.GANGLION_BOARD.value, params)
-board.prepare_session()
-board.start_stream()
 
-#epoch parameters
-epoch_length = 2.0  # seconds
-fs = board.get_sampling_rate(BoardIds.GANGLION_BOARD.value)
-samples_per_epoch = int(epoch_length * fs)
-min_samples = 19
+running = True
+predict_every = 0
 
-#get eeg channels
-eeg_channels = board.get_eeg_channels(BoardIds.GANGLION_BOARD.value)
-print("Recording EEG from rows:", eeg_channels) 
+buf_50hz = deque(maxlen=SPW)  # rolling window at 50 Hz; each elem is shape (n_ch,)
 
-def preprocess(epoch):
-    #band-pass filter 0.5–50Hz
-    for ch in range(epoch.shape[1]):
-        DataFilter.perform_bandpass(
-            epoch[:, ch], fs,
-            25,    # center freq
-            49.5,  # half-bandwidth = 50–0.5
-            4, FilterTypes.BUTTERWORTH.value, 0
-        )
-    #Normalize each channel to zero mean, unit variance
-    return (epoch - np.mean(epoch, axis=0)) / np.std(epoch, axis=0)
+model = None
+board = None
+eeg_channels = None
+timestamps_channel = None
+
+# Per-channel causal filter state (200 Hz, SOS)
+sos = None
+sos_z = None
+
+#filters for live use
+def bandpass_sos(lowcut, highcut, fs, order=4):
+    #sos filter is important since numerically stable for live use and quick
+    nyq = 0.5 * fs
+    low = max(1e-6, lowcut / nyq)
+    high = min(0.999999, highcut / nyq)
+    return butter(order, [low, high], btype='band', output='sos')
+
+#need this to stop
+def on_release(key):
+    global running
+    if key == keyboard.Key.esc:
+        running = False
+        return False  # stop listener
+#summary: raw data -> filter -> downsample -> sliding window -> predicts
+def record_and_predict():
+    global predict_every, sos_z
+
+    while running: #run until escape
+        data = board.get_board_data()  # shape (channels x samples)
+        n_new = data.shape[1] #how many samples
+        if n_new == 0:
+            time.sleep(0.01)
+            continue
+
+        # transpose to sample x channels
+        x200 = data[eeg_channels, :].T.astype(np.float32)
+
+        # Initialize SOS state on first run
+        if sos_z is None:
+            sos_z = [None] * x200.shape[1] 
+
+        #filter each channel
+        x200_f = np.empty_like(x200)
+        for ch in range(x200.shape[1]):
+            x200_f[:, ch], sos_z[ch] = sosfilt(sos, x200[:, ch], zi=sos_z[ch])
+
+        # Downsample to 50 Hz by simple stride
+        x50 = x200_f[::DECIM, :]  # (N/4, n_ch)
+
+        # Feed samples into rolling buffer and predict every HOP
+        for i in range(x50.shape[0]):
+            buf_50hz.append(x50[i, :]) #holds a window
+            predict_every += 1
+
+            #2 seconds worth of data
+            if len(buf_50hz) == SPW and predict_every >= SAMPLE_SLIDE:
+                predict_every = 0
+
+                # expected input shape (1, time, channels, 1)
+                window = np.asarray(buf_50hz, dtype=np.float32)  # (SPW, n_ch)
+                x_in = window.reshape(1, SPW, window.shape[1], 1)
+
+                # If you normalized during training, apply the SAME here:
+                # For example, per-window z-score (uncomment if used in training):
+                # mu = x_in.mean(axis=(1, 2), keepdims=True)
+                # sd = x_in.std(axis=(1, 2), keepdims=True) + 1e-6
+                # x_in = (x_in - mu) / sd
+
+                #pick class of highest probability
+                p = model.predict(x_in, verbose=0)[0]  # softmax (n_classes,)
+                pred_id = int(np.argmax(p))
+                pred_label = LABELS[pred_id] if pred_id < len(LABELS) else str(pred_id)
+
+                # Print compact live status
+                print(f"[LIVE] {pred_label}  probs={np.round(p, 3)}")
 
 
-print("Starting live classification. Press Ctrl+C to stop.")
+def main():
+    global model, board, eeg_channels, timestamps_channel, sos
 
-try:
-    while True:
-        # array with shape (num_channels, num_samples)
-        raw = board.get_current_board_data(samples_per_epoch)
-        
-        #get enough data for preprocessing
-        if raw.shape[1] < samples_per_epoch:
-            continue  # not enough data yet
+    #instantiating later for safety incase hardware not set up yet
+    print("Loading model...")
+    model = load_model(MODEL_PATH)
+    print("Model loaded.")
 
-        #Slice out only the EEG rows = (samples, 4)
-        epoch = raw[[2, 3, 4, 5], :].T
+    print("Preparing BrainFlow session...")
+    board = BoardShim(BoardIds.GANGLION_BOARD.value, params)
+    eeg_channels = BoardShim.get_eeg_channels(BoardIds.GANGLION_BOARD.value)
+    timestamps_channel = BoardShim.get_timestamp_channel(BoardIds.GANGLION_BOARD.value)
 
-        
-        # Preprocess: filter + z-score
-        epoch = preprocess(epoch)
+    # Design causal SOS band-pass at 200 Hz
+    sos = bandpass_sos(LOWCUT, HIGHCUT, FS_RAW, ORDER)
 
-        #trim to match training data
-        if epoch.shape[0] > min_samples:
-            epoch = epoch[:min_samples, :]
-        elif epoch.shape[0] < min_samples:
-            pad = min_samples - epoch.shape[0]
-            epoch = np.pad(epoch, ((0, pad), (0, 0)), mode='constant')
+    board.prepare_session()
+    board.start_stream(12000)
 
-        #Reshape to (1, time, channels, 1) for Conv2D
-        epoch = epoch.reshape(1, min_samples, len(eeg_channels), 1)
+    # Start prediction thread, threading with main
+    t = threading.Thread(target=record_and_predict, daemon=True)
+    t.start()
 
-        probs = model.predict(epoch, verbose=0)
-        label = label_map[int(np.argmax(probs))]
-        print("Predicted label:", label)
+    # ESC to stop
+    listener = keyboard.Listener(on_release=on_release)
+    listener.start()
 
-        #Wait for the next epoch
-        time.sleep(epoch_length)
-        
-except KeyboardInterrupt:
-    print("Live classification stopped.")
+    print("Live prediction running. Press ESC to stop.")
+    try:
+        while running and listener.is_alive():
+            time.sleep(0.1)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        # Clean shutdown
+        print("Stopping...")
+        try:
+            board.stop_stream()
+        except Exception:
+            pass
+        try:
+            board.release_session()
+        except Exception:
+            pass
+        running_local = False
 
-finally:
-    board.stop_stream()
-    board.release_session()
+
+if __name__ == "__main__":
+    main()

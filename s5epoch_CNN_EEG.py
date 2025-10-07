@@ -4,6 +4,8 @@ from sklearn.model_selection import train_test_split
 from tensorflow.keras.utils import to_categorical
 from tensorflow.keras import layers, models, optimizers, callbacks
 
+#need at least two files for training
+
 CSV = "filtered_eeg_action_data.csv"
 TIME = "BoardTime"
 CHANNELS = ["EEG_Ch1","EEG_Ch2","EEG_Ch3","EEG_Ch4"]
@@ -146,4 +148,3 @@ print(f"Val acc: {val_acc:.3f}")
 
 model.save('EEG_CNN_model.h5')
 print("Model saved as 'EEG_CNN_model.h5'")
-
