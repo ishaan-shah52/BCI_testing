@@ -1,3 +1,25 @@
+
+"""
+Notes: 
+In this file, we configure Brainflow to talk to the OpenBCI ganglion
+-start the board stream and a background thread that drains the samples
+-listen for keyboard events and have a global label that gets updated
+-append each sample pulled
+-stop the stream and save it to an initial file
+
+Libraries:
+BrainFlow: device I/O, boardshim handles stream
+-BoardShim is python interface class
+Pynput: low level hook for getting keyboard inputs globally
+
+Using python for ML integration
+
+Config file with all important information to keep parameters from one source
+
+Improvements: set a timer to label rather than keyboard inputs
+"""
+
+
 import csv
 import time
 import threading
@@ -17,10 +39,10 @@ labels = {
 
 """
 Recording set up for consistency:
-Channel 1: above left eye
-Channel 2: below left eye
-Channel 3: above right eye
-Channel 4: below right eye
+Channel 1: above left eye (green)
+Channel 2: below left eye (yellow)
+Channel 3: above right eye (orange)
+Channel 4: below right eye 
 """
 
 current_label = 'nothing' #the action happening at the time
@@ -38,8 +60,11 @@ params.serial_port = "COM5"
 board = BoardShim(BoardIds.GANGLION_BOARD.value, params)
 eeg_channels = BoardShim.get_eeg_channels(BoardIds.GANGLION_BOARD.value) #gets index of eeg channels
 timestamps_channel = BoardShim.get_timestamp_channel(BoardIds.GANGLION_BOARD.value) #gets index of time channel
-print(eeg_channels)
-print(timestamps_channel)
+print("EEG channels:", eeg_channels)
+print("Timestamp channels:", timestamps_channel)
+
+sampling_rate = BoardShim.get_sampling_rate(BoardIds.GANGLION_BOARD.value)
+print("Sampling rate:", sampling_rate)
 
 
 # Function to update the current label based on keyboard input
@@ -168,10 +193,9 @@ def main():
         # Merge data and save to CSV
         # print("Merging EEG data with labels...")
         # merged_data = merge_data()
-        save_to_csv('eeg_sessions/eeg_action_data_1.csv', eeg_data) #change both of these lines
-        print("Data saved to 'eeg_action_data_1.csv'") #this one
+        save_to_csv('eeg_sessions/eeg_action_data_4.csv', eeg_data) #change both of these lines
+        print("Data saved to 'eeg_action_data_4.csv'") #this one
         print("change these file numbers now")
-
         print("Releasing session...")
         board.release_session()
         print("Session released.")

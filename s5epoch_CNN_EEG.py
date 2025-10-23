@@ -1,3 +1,13 @@
+
+"""
+Notes: 
+First we window by session and relabel all the labels as integers
+we make training and testing data by window
+
+Improvements: 
+-validation set
+-take out non majority majoority windows like 60 - 70%
+"""
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
@@ -13,7 +23,7 @@ LABEL = "Label"
 SESSION = "session_id"
 
 FS = 50 #sampling frequency: downsampled to 50 Hz
-WINDOW  = 2.0 # window length (seconds)
+WINDOW  = 2.0 # window length (seconds) for full context for now, might move to 1
 STRIDE_S = 0.5 #overlap between windows    
 SPW = int(WINDOW * FS) #samples per window
 SAMPLE_SLIDE = int(STRIDE_S * FS) #sample slide
@@ -55,7 +65,7 @@ S = np.array(S)   # (num_windows,)
 print("X shape:", X.shape, "Y shape:", Y.shape)
 
 
-# Train/Val split (by session to prevent leakage)
+# Train/Val split (by session)
 
 # Split on session ids (not random windows)
 unique_sess = np.unique(S)
@@ -102,7 +112,7 @@ def build_eegnet_like(n_times, n_ch, n_classes,
                                use_bias=False, depthwise_constraint=None)(x)
     x = layers.BatchNormalization()(x)
     x = layers.Activation('elu')(x)
-    x = layers.AveragePooling2D(pool_size=(4, 1))(x)
+    x = layers.AveragePooling2D(pool_size=(4, 1))(x) #increase receptive field
     x = layers.SpatialDropout2D(drop1)(x)
 
     #combines spatial mix with temporal aspect
@@ -136,8 +146,8 @@ es = callbacks.EarlyStopping(patience=10, restore_best_weights=True, monitor='va
 hist = model.fit(
     X_train, Y_train,
     validation_data=(X_val, Y_val),
-    epochs=50,
-    batch_size=64,
+    epochs=30,
+    batch_size=32,
     callbacks=[es],
     verbose=1
 )
@@ -148,3 +158,26 @@ print(f"Val acc: {val_acc:.3f}")
 
 model.save('EEG_CNN_model.h5')
 print("Model saved as 'EEG_CNN_model.h5'")
+
+import matplotlib.pyplot as plt
+
+plt.figure(figsize=(7,4))
+plt.plot(hist.history['loss'], label='Training loss')
+plt.plot(hist.history['val_loss'], label='Validation loss')
+plt.xlabel('Epoch')
+plt.ylabel('Loss (categorical cross-entropy)')
+plt.title('Training and Validation Loss Over Epochs')
+plt.legend()
+plt.grid(True)
+plt.show()
+
+
+plt.figure(figsize=(7,4))
+plt.plot(hist.history['accuracy'], label='Training accuracy')
+plt.plot(hist.history['val_accuracy'], label='Validation accuracy')
+plt.xlabel('Epoch')
+plt.ylabel('Accuracy')
+plt.title('Training and Validation Accuracy Over Epochs')
+plt.legend()
+plt.grid(True)
+plt.show()

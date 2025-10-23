@@ -1,3 +1,13 @@
+
+"""
+Notes:
+loads the combined csv with the eeg data
+-sorts by time and session
+-filters with butterworth band pass from 0.5-20 hz
+ since this is where blinks and eyebrow activity is
+-then applies zero-phase to cancel phase distortion
+-downsamples
+"""
 import pandas as pd
 import numpy as np
 # gives digital filters
@@ -7,6 +17,9 @@ from scipy.signal import butter, filtfilt, iirnotch
 butter: butterworth band-pass filter: throw everything out around wanted frequency range
 -gets noisy signals out, 0.5 - 50 contains the proper brain waves, boost these like an equalizer
 
+filtfilt: we want features to line up with blink events, for offline training, goes forward and backward for zero phase shift
+-not using sosfilt here because of lag, only can do forward pass, which introduces a lag
+
 include nyquist frequency to not mislabel fast waves as slow waves due to aliasing
 -sample at least 2 times the fastest wanted which is 50, so 100 is slowest to sample at
 due to two vertices of full wave rule
@@ -15,9 +28,11 @@ aliasing: sampling illusion
 
 filename = 'combined_eeg_data.csv' 
 
-FS = 200           # Ganglion sampling rate
+#research for eye signal based on: https://www.researchgate.net/figure/The-frequency-response-of-eye-blinking-signal_fig4_275830679
+
+FS = 200 # Ganglion sampling rate
 LOWCUT = 0.5       
-HIGHCUT = 20.0     # EEG mostly < 20 Hz
+HIGHCUT = 20.0 # EEG mostly < 20 Hz
 ORDER = 4
 DOWNSAMPLE_TO = 50
 APPLY_NOTCH_60 = False  
@@ -64,6 +79,7 @@ def butter_bandpass(lowcut, highcut, fs, order=4):
 def apply_filters(block, fs):
     b, a = butter_bandpass(LOWCUT, HIGHCUT, fs, ORDER)
     for ch in CHANNELS:
+        #this is acausal: peeks into future
         block[ch] = filtfilt(b, a, block[ch].to_numpy(), method='gust')
     return block
 
@@ -76,6 +92,7 @@ else:
     combined_eeg = apply_filters(combined_eeg, FS)
 
 #could down sample since highest freq needed is 20 Hz and nyquist says you only need 2x
+#reduces file size
 if DOWNSAMPLE_TO and DOWNSAMPLE_TO < FS and FS % DOWNSAMPLE_TO == 0:
     step = FS // DOWNSAMPLE_TO #200/50 = 4
     if 'session_id' in combined_eeg.columns:
@@ -83,7 +100,7 @@ if DOWNSAMPLE_TO and DOWNSAMPLE_TO < FS and FS % DOWNSAMPLE_TO == 0:
     else:
         combined_eeg = combined_eeg.iloc[::step].copy()
 
-
+print("Combined filtered EEG shape:", combined_eeg.shape)
 # Save the filtered data to a new CSV file
 output_filename = 'filtered_eeg_action_data.csv'
 combined_eeg.to_csv(output_filename, index=False)
