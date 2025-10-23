@@ -69,5 +69,5 @@ def plot_session(df_all: pd.DataFrame, session_id: int, title_suffix: str = "", 
 
 #sessions i wanna inspect
 session_ids = sorted(filtered_eeg["session_id"].unique())
-for sid in session_ids[2:]: 
+for sid in session_ids[5:]: 
     plot_session(filtered_eeg, sid)

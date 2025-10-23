@@ -7,6 +7,7 @@ we make training and testing data by window
 Improvements: 
 -validation set
 -take out non majority majoority windows like 60 - 70%
+-change window size since blinks are shorter
 """
 import numpy as np
 import pandas as pd
@@ -71,10 +72,20 @@ print("X shape:", X.shape, "Y shape:", Y.shape)
 unique_sess = np.unique(S)
 train_sess, val_sess = train_test_split(unique_sess, test_size=0.25, random_state=42)
 train_mask = np.isin(S, train_sess) #use a mask to find out which session in training or testing
-val_mask   = np.isin(S, val_sess)
+val_mask = np.isin(S, val_sess)
 
-X_train, Y_train = X[train_mask], Y[train_mask]
-X_val,   Y_val   = X[val_mask],   Y[val_mask]
+Y_train, Y_val = Y[train_mask], Y[val_mask]
+
+# normalize the data
+X_train = X[train_mask].astype('float32')
+X_val = X[val_mask].astype('float32')
+
+mu = X_train.mean(axis=(0, 1, 3), keepdims=True) 
+sd = X_train.std(axis=(0, 1, 3), keepdims=True) + 1e-8
+
+X_train = (X_train - mu) / sd
+X_val = (X_val - mu) / sd
+
 print("Train windows:", len(X_train), "Val windows:", len(X_val))
 
 # Minimal EEGNet-like model
@@ -146,8 +157,8 @@ es = callbacks.EarlyStopping(patience=10, restore_best_weights=True, monitor='va
 hist = model.fit(
     X_train, Y_train,
     validation_data=(X_val, Y_val),
-    epochs=30,
-    batch_size=32,
+    epochs=50,
+    batch_size=64,
     callbacks=[es],
     verbose=1
 )
