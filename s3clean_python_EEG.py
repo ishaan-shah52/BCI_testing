@@ -7,6 +7,9 @@ loads the combined csv with the eeg data
  since this is where blinks and eyebrow activity is
 -then applies zero-phase to cancel phase distortion
 -downsamples
+
+improvements:
+make sure that downsample does not cut between sessions
 """
 import pandas as pd
 import numpy as np

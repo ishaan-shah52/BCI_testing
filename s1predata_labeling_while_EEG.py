@@ -8,7 +8,7 @@ In this file, we configure Brainflow to talk to the OpenBCI ganglion
 -stop the stream and save it to an initial file
 
 Libraries:
-BrainFlow: device I/O, boardshim handles stream
+BrainFlow: device I/O, boardshim handles stream, low latency
 -BoardShim is python interface class
 Pynput: low level hook for getting keyboard inputs globally
 

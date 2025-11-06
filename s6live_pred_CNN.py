@@ -13,18 +13,20 @@ from brainflow.board_shim import BoardShim, BrainFlowInputParams, BoardIds
 #model
 MODEL_PATH = "EEG_CNN_model.h5"
 
+#matches training order
 LABELS = ['both_blink', 'left_blink', 'nothing', 'right_blink']
 
 # Raw board rate and preprocessing
 FS_RAW = 200
 LOWCUT, HIGHCUT, ORDER = 0.5, 20.0, 4
 FS = 50
-DECIM = FS_RAW // FS
+DOWNSAMPLE = FS_RAW // FS
 
-# Windowing (match training)
-WINDOW_S = 2.0        # seconds
-STRIDE_S = 0.5        # seconds
-SPW = int(WINDOW_S * FS)   # 100
+#MATCH TRAINING
+# Windowing 
+WINDOW_S = 2.0 # seconds
+STRIDE_S = 0.5 # seconds
+SPW = int(WINDOW_S * FS) # 100
 SAMPLE_SLIDE = int(STRIDE_S * FS)
 
 # Set up BrainFlow parameters
@@ -35,7 +37,7 @@ params.mac_address = "D5:A4:BE:DD:BC:89"
 running = True
 predict_every = 0
 
-buf_50hz = deque(maxlen=SPW)  # rolling window at 50 Hz; each elem is shape (n_ch,)
+buf_50hz = deque(maxlen=SPW) # rolling window at 50 Hz; each elem is shape (n_ch,)
 
 model = None
 board = None
@@ -63,9 +65,10 @@ def on_release(key):
     
 #summary: raw data -> filter -> downsample -> sliding window -> predicts
 def record_and_predict():
-    global predict_every, sos_z
+    global predict_every, sos_z #how many samples since last prediction
 
     while running:
+        #get new samples
         try:
             data = board.get_board_data()  # (n_rows x n_samples)
         except Exception:
@@ -78,6 +81,7 @@ def record_and_predict():
             continue
 
         # (n_samples, n_ch) float32
+        #extract EEG channels
         x200 = data[eeg_channels, :].T.astype(np.float32)
 
         # init SOS zi on first block: one zi per channel
@@ -91,10 +95,10 @@ def record_and_predict():
             y, sos_z[ch] = sosfilt(sos, x200[:, ch], zi=sos_z[ch])
             x200_f[:, ch] = y
 
-        # decimate → 50 Hz
-        x50 = x200_f[::DECIM, :]  # (n_new/4, n_ch)
+        # downsample to 50 Hz
+        x50 = x200_f[::DOWNSAMPLE, :]  # (n_new/4, n_ch)
 
-        # rolling buffer + stride
+        # rolling buffer + stride, next prediction
         for i in range(x50.shape[0]):
             buf_50hz.append(x50[i, :])
             predict_every += 1
