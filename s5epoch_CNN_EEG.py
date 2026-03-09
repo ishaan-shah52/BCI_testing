@@ -9,6 +9,7 @@ Improvements:
 -take out non majority majoority windows like 60 - 70%
 -change window size since blinks are shorter
 """
+import json
 import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
@@ -168,7 +169,13 @@ val_loss, val_acc = model.evaluate(X_val, Y_val, verbose=0)
 print(f"Val acc: {val_acc:.3f}")
 
 model.save('EEG_CNN_model.h5')
+# Save label order so live script (s6) uses same class indices
+with open('EEG_CNN_model_labels.json', 'w') as f:
+    json.dump(labels_sorted, f, indent=2)
+np.savez('EEG_CNN_model_norm.npz', mu=mu.squeeze(), sd=sd.squeeze())
 print("Model saved as 'EEG_CNN_model.h5'")
+print("Labels saved as 'EEG_CNN_model_labels.json' (use in s6 for correct mapping)")
+print("Norm stats saved as 'EEG_CNN_model_norm.npz' (optional for s6)")
 
 import matplotlib.pyplot as plt
 

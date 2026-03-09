@@ -1,3 +1,5 @@
+import json
+import os
 import time
 import threading
 from collections import deque
@@ -12,9 +14,18 @@ from brainflow.board_shim import BoardShim, BrainFlowInputParams, BoardIds
 
 #model
 MODEL_PATH = "EEG_CNN_model.h5"
+LABELS_PATH = "EEG_CNN_model_labels.json"
+NORM_PATH = "EEG_CNN_model_norm.npz"
 
-#matches training order
-LABELS = ['both_blink', 'left_blink', 'nothing', 'right_blink']
+# Load label order from training (s5) so indices match; fallback if file missing
+def _load_labels():
+    if os.path.isfile(LABELS_PATH):
+        with open(LABELS_PATH) as f:
+            return json.load(f)
+    print("Warning: EEG_CNN_model_labels.json not found. Using fallback label order.")
+    return ['both_blink', 'eyebrow_raise', 'left_blink', 'nothing', 'right_blink']
+
+LABELS = _load_labels()
 
 # Raw board rate and preprocessing
 FS_RAW = 200
@@ -43,6 +54,10 @@ model = None
 board = None
 eeg_channels = None
 timestamps_channel = None
+
+# Optional: normalization from training (s5); (1, 1, n_ch, 1) for broadcast
+norm_mu = None
+norm_sd = None
 
 # Per-channel causal filter state (200 Hz, SOS)
 sos = None
@@ -110,10 +125,14 @@ def record_and_predict():
                 window = np.asarray(buf_50hz, dtype=np.float32)     # (SPW, n_ch)
                 x_in = window.reshape(1, SPW, window.shape[1], 1)   # (1,100,C,1)
 
-                # Per-window z-score (since we don't have mu/sd files)
-                w_mu = x_in.mean(axis=(1, 2), keepdims=True)
-                w_sd = x_in.std(axis=(1, 2), keepdims=True) + 1e-6
-                x_in = (x_in - w_mu) / w_sd
+                # Use saved train normalization if available, else per-window z-score
+                if norm_mu is not None and norm_sd is not None:
+                    # norm_mu/norm_sd: (n_times, n_ch) or (n_ch,) from npz
+                    x_in = (x_in - norm_mu) / norm_sd
+                else:
+                    w_mu = x_in.mean(axis=(1, 2), keepdims=True)
+                    w_sd = x_in.std(axis=(1, 2), keepdims=True) + 1e-6
+                    x_in = (x_in - w_mu) / w_sd
 
                 # Predict
                 p = model.predict(x_in, verbose=0)[0]   # (n_classes,)
@@ -128,11 +147,21 @@ def record_and_predict():
         time.sleep(0.005)
 
 def main():
-    global model, board, eeg_channels, timestamps_channel, sos, running
+    global model, board, eeg_channels, timestamps_channel, sos, norm_mu, norm_sd, running
 
     print("Loading model...")
     model = load_model(MODEL_PATH)
-    print("Model loaded. Classes:", model.output_shape[-1])
+    print("Model loaded. Classes:", model.output_shape[-1], "Labels:", LABELS)
+
+    # Load training normalization if available (from s5)
+    if os.path.isfile(NORM_PATH):
+        npz = np.load(NORM_PATH)
+        # mu, sd are (n_ch,) from s5; broadcast to (1, 1, n_ch, 1)
+        norm_mu = np.reshape(npz["mu"], (1, 1, -1, 1)).astype(np.float32)
+        norm_sd = np.reshape(npz["sd"], (1, 1, -1, 1)).astype(np.float32) + 1e-8
+        print("Using saved normalization from", NORM_PATH)
+    else:
+        norm_mu = norm_sd = None
 
     print("Preparing BrainFlow session...")
     board = BoardShim(BoardIds.GANGLION_BOARD.value, params)
